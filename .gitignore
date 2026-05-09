@@ -1,0 +1,102 @@
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+venv/
+ENV/
+env/
+
+# Java
+target/
+*.jar
+*.war
+*.ear
+*.zip
+*.tar.gz
+.classpath
+.project
+.settings/
+
+# Docker
+.docker/
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Cache
+.cache/
+.pytest_cache/
+
+# Git
+.git/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS specific
+Thumbs.db
+.AppleDouble
+.LSOverride
+
+# IDE extensions
+*.sublime-project
+*.sublime-workspace
+
+# Node (if used)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Secrets
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# Docker volumes (local)
+postgres_data/
+clickhouse_data/
+signoz_data/

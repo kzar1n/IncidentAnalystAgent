@@ -1,0 +1,148 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: incident-postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-incident_db}
+      POSTGRES_USER: ${DB_USER:-incident_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-incident_pass}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-incident_user} -d ${DB_NAME:-incident_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - incident-network
+
+  # OpenTelemetry Collector
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.95.0
+    container_name: incident-otel-collector
+    command:
+      - "--config=/etc/otel-collector-config.yml"
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # Prometheus metrics
+    volumes:
+      - ./infrastructure/otel-collector-config.yml:/etc/otel-collector-config.yml
+    depends_on:
+      - signoz
+    networks:
+      - incident-network
+
+  # SigNoz
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.10
+    container_name: incident-clickhouse
+    environment:
+      CLICKHOUSE_DB: signoz
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - incident-network
+
+  signoz:
+    image: signoz/signoz:0.35.0
+    container_name: incident-signoz
+    depends_on:
+      - clickhouse
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      SIGNOZ_DB: signoz
+    ports:
+      - "3301:3301"   # Frontend
+      - "4317:4317"   # OTLP gRPC (mapped through collector)
+      - "4318:4318"   # OTLP HTTP (mapped through collector)
+    volumes:
+      - signoz_data:/var/lib/signoz
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3301/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - incident-network
+
+  # Spring Boot Application
+  spring-app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: incident-spring-app
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      SERVER_PORT: 8080
+      SPRING_APPLICATION_NAME: incident-analyzer-app
+    ports:
+      - "8080:8080"
+    depends_on:
+      - otel-collector
+      - signoz
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - incident-network
+    restart: unless-stopped
+
+  # FastAPI Orchestrator
+  orchestrator:
+    build:
+      context: ./orchestrator
+      dockerfile: Dockerfile
+    container_name: incident-orchestrator
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-incident_db}
+      DB_USER: ${DB_USER:-incident_user}
+      DB_PASSWORD: ${DB_PASSWORD:-incident_pass}
+      PORT: 8000
+      HOST: 0.0.0.0
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-test-key}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      signoz:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - incident-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  clickhouse_data:
+    driver: local
+  signoz_data:
+    driver: local
+
+networks:
+  incident-network:
+    driver: bridge

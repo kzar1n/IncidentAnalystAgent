@@ -1,0 +1,43 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: incident-analyzer-app
+  jmx:
+    enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    export:
+      otlp:
+        enabled: true
+        url: http://otel-collector:4317
+  tracing:
+    propagation:
+      type: jaeger
+    exporter:
+      otlp:
+        endpoint: http://otel-collector:4317
+
+logging:
+  level:
+    root: INFO
+    com.incident: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+  file:
+    name: logs/app.log
+  logback:
+    rollingpolicy:
+      max-file-size: 10MB
+      max-history: 10
