@@ -33,13 +33,19 @@ nano .env
 docker-compose up -d
 ```
 
-4. **Wait for services to be ready** (approximately 30-60 seconds)
+4. **Wait for containers to stabilize** (first boot can take longer while ClickHouse/ZooKeeper and migrations run):
 
 ```bash
-docker-compose ps
+docker compose ps
 ```
 
-All services should show "healthy" status.
+Services with **`HEALTHCHECK`** show `(healthy)` in `docker ps`. **`otel-collector`** and **`signoz-otel-collector`** may appear only as **`Up`** with no healthy label—they are still required. Jobs **`init-clickhouse`** and **`signoz-telemetrystore-migrator`** often exit with **`Exited (0)`** after succeeding.
+
+**Telemetry path:**  
+`spring-app` → **`otel-collector`** (inside Compose) → **`signoz-otel-collector`** (OTLP ingress; host ports **4317/4318**) → **ClickHouse** → **SigNoz UI** on **http://localhost:3301**.
+
+**Incident path:**  
+SigNoz **never** pushes to the orchestrator by default. Configure an **alert** with a **webhook** URL **`http://orchestrator:8000/incidents`** (Docker network hostname `orchestrator`). See **[GETTING_STARTED.md](GETTING_STARTED.md#configure-signoz-alerts-for-the-orchestrator)** for step-by-step instructions.
 
 ## 📋 Architecture Overview
 
@@ -62,12 +68,16 @@ All services should show "healthy" status.
 │  └──────────────────────────────────────┘                   │
 │        │                         │                            │
 │        └─────────┬───────────────┘                           │
+│                  │ OTLP                                         │
+│                  ▼                                            │
+│  ┌──────────────────────────────────────┐                   │
+│  │  SigNoz OTel Collector (4317/4318)    │                   │
+│  └──────────────────────────────────────┘                   │
 │                  │                                            │
 │                  ▼                                            │
 │  ┌──────────────────────────────────────┐                   │
-│  │   SigNoz (Port 3301)                 │                   │
-│  │   Observability Platform             │                   │
-│  │   - Traces, Metrics, Logs            │                   │
+│  │   SigNoz UI (localhost:3301)          │                   │
+│  │   + ClickHouse + alerts/webhooks       │                   │
 │  └──────────────────────────────────────┘                   │
 │                  │                                            │
 │                  │ Webhook on Alert                          │
@@ -91,24 +101,34 @@ All services should show "healthy" status.
 
 ## 🧪 Testing the Platform
 
-### 1. Verify Services
+### 1. Verify stack health
+
+Containers (run `docker compose ps`):
+
+| Essentials | Purpose |
+|------------|---------|
+| postgres, zookeeper-1, clickhouse | Persist incidents + telemetry store |
+| signoz, **signoz-otel-collector** | UI/API + OTLP intake to ClickHouse |
+| **otel-collector**, spring-app, orchestrator | App telemetry gateway + orchestration |
+
+Smoke tests:
 
 ```bash
-# Check all services are running
-curl http://localhost:8080/health
-curl http://localhost:8000/health
-curl http://localhost:3301
+curl -s http://localhost:8080/health
+curl -s http://localhost:8000/health
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3301/
+docker compose logs --tail=30 signoz-otel-collector otel-collector
 ```
 
-### 2. Simulate an Error (Trigger Incident Analysis)
+### 2. Simulate an error (telemetry vs webhook)
 
 ```bash
-# This will trigger an exception
+# Exception is traced by OpenTelemetry
 curl http://localhost:8080/error
-
-# Check SigNoz UI for the error (http://localhost:3301)
-# Wait a moment for the webhook to trigger
 ```
+
+Verify the trace under **Services / Traces** at http://localhost:3301.  
+**Incident creation in the orchestrator** requires a SigNoz **alert rule** wired to webhook **`http://orchestrator:8000/incidents`** (see GETTING_STARTED). Without that configuration, **`GET /incidents` may stay empty** even when telemetry looks healthy.
 
 ### 3. View Incidents
 
@@ -155,13 +175,13 @@ curl http://localhost:8080/payment/999
 - View real-time traces, metrics, and logs
 - Set up alert rules to trigger webhooks
 
-### Steps to Setup SigNoz Alert (Optional)
+### Configure SigNoz → orchestrator webhook (required for `/incidents` from telemetry)
 
-1. Open SigNoz UI: http://localhost:3301
-2. Go to Alerts → Alert Rules
-3. Create alert for HTTP 500 or exceptions
-4. Set webhook to: `http://orchestrator:8000/incidents`
-5. Enable the alert
+Follow **[GETTING_STARTED.md — Configure SigNoz alerts](GETTING_STARTED.md#configure-signoz-alerts-for-the-orchestrator)**. Summary:
+
+1. SigNoz UI → create a **webhook notification channel**: `POST` **`http://orchestrator:8000/incidents`** (hostname **`orchestrator`** on the Compose network).
+2. **Alerts** → new **rule** for the signal you trigger (thresholds vary by datasource).
+3. Attach the webhook channel and **enable** the rule.
 
 ## 🗄️ Database
 
