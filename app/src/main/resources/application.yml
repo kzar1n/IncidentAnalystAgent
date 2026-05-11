@@ -24,7 +24,7 @@ management:
         url: http://otel-collector:4317
   tracing:
     propagation:
-      type: jaeger
+      type: w3c
     exporter:
       otlp:
         endpoint: http://otel-collector:4317
