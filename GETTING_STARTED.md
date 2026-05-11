@@ -7,8 +7,9 @@ This guide will walk you through setting up and running the AI-Assisted Incident
 1. [Prerequisites](#prerequisites)
 2. [Quick Start](#quick-start)
 3. [Service Overview](#service-overview)
-4. [Testing the Platform](#testing-the-platform)
-5. [Troubleshooting](#troubleshooting)
+4. [Configure SigNoz alerts for the orchestrator](#configure-signoz-alerts-for-the-orchestrator)
+5. [Testing the Platform](#testing-the-platform)
+6. [Troubleshooting](#troubleshooting)
 
 ## Prerequisites
 
@@ -81,36 +82,83 @@ setup.bat start
 
 ### 4. Wait for Services to Be Ready
 
-Monitor service startup:
+Monitor service startup (Compose V2):
 
 ```bash
-docker-compose ps
+docker compose ps
+# or legacy: docker-compose ps
 ```
 
-Wait until all services show "healthy" status:
+**One-shot containers** (`incident-init-clickhouse`, `incident-signoz-telemetrystore-migrator`) normally finish and show **Exited (0)** after the first successful run. That is expected.
+
+Typical steady-state `docker compose ps` (example):
 
 ```
-NAME                    STATUS              PORTS
-incident-postgres       Up 2 minutes        0.0.0.0:5432->5432/tcp
-incident-otel-collector Up 2 minutes        0.0.0.0:4317->4317/tcp, 0.0.0.0:4318->4318/tcp
-incident-clickhouse     Up 2 minutes        0.0.0.0:8123->8123/tcp, 9000/tcp
-incident-signoz         Up 1 minute         0.0.0.0:3301->3301/tcp
-incident-spring-app     Up 45 seconds       0.0.0.0:8080->8080/tcp
-incident-orchestrator   Up 30 seconds       0.0.0.0:8000->8000/tcp
+NAME                              STATUS                         PORTS
+incident-postgres                 Up … (healthy)                 0.0.0.0:5432->5432/tcp
+incident-clickhouse               Up … (healthy)                 8123/tcp, 9000/tcp (published)
+incident-zookeeper-1              Up … (healthy)                 (internal ZooKeeper ports)
+incident-signoz                   Up … (healthy)                 0.0.0.0:3301->8080/tcp
+incident-signoz-otel-collector    Up …                          0.0.0.0:4317-4318->4317-4318/tcp
+incident-otel-collector           Up …                          0.0.0.0:8888->8888/tcp
+incident-spring-app               Up … (healthy)                 0.0.0.0:8080->8080/tcp
+incident-orchestrator             Up … (healthy)                 0.0.0.0:8000->8000/tcp
 ```
 
-### 5. Verify Services Are Running
+Docker only shows `(healthy)` when the service defines a **`HEALTHCHECK`**. Gateways **`incident-otel-collector`** and **`incident-signoz-otel-collector`** may stay **Up** without that label—they are still required for telemetry.
+
+Optional: inspect Compose health explicitly:
 
 ```bash
-# Test Spring Boot App
-curl http://localhost:8080/health
-
-# Test Orchestrator
-curl http://localhost:8000/health
-
-# Expected response:
-# {"status":"UP"}
+docker compose ps --format "table {{.Name}}\t{{.Status}}"
 ```
+
+Optional: Docker health field for a named container:
+
+```bash
+docker inspect -f "{{.State.Health.Status}}" incident-orchestrator
+```
+
+### 4a. Essential services vs supporting services
+
+Everything below must be **running** for the **full pipeline** (app → OTLP → SigNoz UI → webhook → orchestrator):
+
+| Role | Compose service name | Container (typical) | Why it matters |
+|------|----------------------|---------------------|----------------|
+| App + traces | `spring-app` | `incident-spring-app` | Generates telemetry and simulated errors |
+| OTLP gateway | `otel-collector` | `incident-otel-collector` | Relays OTLP from the app toward SigNoz |
+| OTLP ingestion (SigNoz) | `signoz-otel-collector` | `incident-signoz-otel-collector` | Receives OTLP and writes to ClickHouse |
+| Storage | `clickhouse` | `incident-clickhouse` | Telemetry store |
+| Coordination | `zookeeper-1` | `incident-zookeeper-1` | Required by ClickHouse SigNoz setup |
+| UI + alerts API | `signoz` | `incident-signoz` | Dashboard and **configured** alert notifications |
+| Incidents DB + AI | `orchestrator` | `incident-orchestrator` | Receives webhook `POST /incidents`, persists to Postgres |
+| Incidents persistence | `postgres` | `incident-postgres` | Stores incidents and analyses |
+
+Supporting / bootstrap (often **not** long-running):
+
+| Compose service | Typical status | Purpose |
+|-----------------|----------------|---------|
+| `init-clickhouse` | Exited (0) | Downloads helper into ClickHouse user scripts |
+| `signoz-telemetrystore-migrator` | Exited (0) | Runs DB migrations once |
+
+### 5. Verify HTTP endpoints
+
+```bash
+# Spring Boot
+curl -s http://localhost:8080/health
+
+# Orchestrator (returns JSON with UP)
+curl -s http://localhost:8000/health
+
+# SigNoz UI/API (expects HTML or redirect; OK if connection succeeds)
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3301/
+```
+
+Telemetry path (conceptual):
+
+`spring-app` → **`otel-collector:4317`** (internal) → **`signoz-otel-collector:4317`** → **ClickHouse** → **SigNoz UI** (`localhost:3301`).
+
+**Important:** Simply calling `GET /error` on the app **does not** notify the orchestrator. SigNoz ingests traces; the orchestrator is called only when **you configure an alert** (or **notification channel**) in SigNoz that sends a webhook to the orchestrator. See [Configure SigNoz alerts for the orchestrator](#configure-signoz-alerts-for-the-orchestrator) below.
 
 ## Service Overview
 
@@ -202,36 +250,65 @@ docker exec -it incident-postgres psql -U incident_user -d incident_db
 SELECT id, service_name, error_type, root_cause, status FROM incidents;
 ```
 
+## Configure SigNoz alerts for the orchestrator
+
+The platform **does not** automatically forward exceptions from Spring Boot to the orchestrator. Flow:
+
+1. The app sends **OpenTelemetry** data to **`otel-collector`**, which forwards to **`signoz-otel-collector`** and into **ClickHouse**.
+2. SigNoz shows traces in the UI (**http://localhost:3301**).
+3. The orchestrator is notified only when a **SigNoz alert fires** and that alert delivers a webhook to **`POST /incidents`**.
+
+Configure once in SigNoz (menus vary slightly by version; look under **Alerts** or **Settings**):
+
+1. Open **http://localhost:3301** (often `admin` / `admin` on first install—change credentials if prompted).
+2. Create a **notification channel** (or webhook **integration**) of type **Webhook** pointing to **`http://orchestrator:8000/incidents`**. Use the Compose hostname **`orchestrator`**, not `localhost`, because the request originates from SigNoz inside Docker.
+3. Create an **alert rule** tied to telemetry you care about (for example thresholds on errors, spans, logs, or derived metrics—depending on availability in your SigNoz build).
+4. Route that rule through the webhook channel and **enable** it.
+
+Smoke-test the webhook from the host (bypasses SigNoz):
+
+```bash
+curl -s -X POST http://localhost:8000/incidents \
+  -H "Content-Type: application/json" \
+  -d '{"alerts":[{"severity":"error","message":"manual webhook test"}]}'
+```
+
+You should see `{"status":"received",...}` and orchestrator logs with `docker compose logs -f orchestrator`.
+
+Until steps 2–4 are done, **`GET http://localhost:8000/incidents` can stay empty** even when **`/error`** traces appear in SigNoz.
+
+To exercise CrewAI without SigNoz, use **manual analysis** (`POST /incidents/analyze`) in Test 5 below.
+
 ## Testing the Platform
 
 ### Test 1: Health Checks
 
-Verify all services are running:
+Verify HTTP responders and Postgres health:
 
 ```bash
-# Spring Boot
-curl http://localhost:8080/health
-
-# Orchestrator
-curl http://localhost:8000/health
-
-# Both should return: {"status":"UP"}
+curl -s http://localhost:8080/health
+curl -s http://localhost:8000/health
+docker compose ps postgres
+docker compose logs --tail=50 otel-collector signoz-otel-collector
 ```
 
-### Test 2: Trigger Error (Incident Generation)
+### Test 2: Trigger error — traces vs orchestrator incidents
 
-Generate an error to test the incident pipeline:
+**Path A (traces):** confirms OTLP ingestion.
 
 ```bash
-# Trigger error
-curl http://localhost:8080/error
-
-# Wait a moment for processing
-sleep 2
-
-# Check for incident
-curl http://localhost:8000/incidents
+curl -s http://localhost:8080/error
 ```
+
+In **Services** or **Traces** at http://localhost:3301, find spans from your application (see `SPRING_APPLICATION_NAME`). If traces are missing, inspect logs for **`otel-collector`** and **`signoz-otel-collector`**.
+
+**Path B (orchestrator):** runs only after [Configure SigNoz alerts](#configure-signoz-alerts-for-the-orchestrator). When your alert fires:
+
+```bash
+curl -s http://localhost:8000/incidents
+```
+
+Without webhook alerts, `/incidents` may stay empty—that is normal.
 
 ### Test 3: Payment Endpoint
 
@@ -280,10 +357,9 @@ SELECT * FROM incidents WHERE id = 'your-incident-id';
 ### Test 6: View in SigNoz Dashboard
 
 1. Open http://localhost:3301
-2. Navigate to "Services" section
-3. Look for "incident-analyzer-app"
-4. Click to view traces and metrics
-5. Check "Alerts" for triggered alerts
+2. Use **Services** or **Traces** to find your workload (often `SPRING_APPLICATION_NAME`, e.g. `incident-analyzer-app`).
+3. Open a trace tied to **`/error`** (or trigger again and refresh).
+4. Under **Alerts**, confirm rules are enabled and webhook delivery appears when you expect incidents in the orchestrator.
 
 ## Troubleshooting
 

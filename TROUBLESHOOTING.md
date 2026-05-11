@@ -56,6 +56,38 @@ taskkill /PID <PID> /F
 
 ## Problemas de Serviço
 
+### Verificar estado dos containers e serviços essenciais
+
+**Objetivo**: saber rapidamente se tudo necessário está de pé antes de diagnosticar webhook ou OTLP.
+
+```bash
+docker compose ps -a
+```
+
+- Containers com **healthcheck** mostram **`(healthy)`** ou **`unhealthy`** no `docker ps`.
+- **`incident-init-clickhouse`** e **`incident-signoz-telemetrystore-migrator`** costumam terminar em **`Exited (0)`** após primeira subida bem-sucedida.
+- **`incident-otel-collector`** e **`incident-signoz-otel-collector`** frequentemente ficam apenas **`Up`** (sem marcador healthy no Docker). Ainda assim são necessários para o pipeline OTLP.
+
+**Serviços essenciais ao projeto** (runtime contínuo):
+
+| Compose | Container típico | Função |
+|---------|---------------------|--------|
+| `postgres` | `incident-postgres` | PostgreSQL dos incidentes |
+| `orchestrator` | `incident-orchestrator` | API + webhook `/incidents` |
+| `spring-app` | `incident-spring-app` | App de exemplo |
+| `zookeeper-1`, `clickhouse` | zookeeper / clickhouse | Base do SigNoz |
+| `signoz` | `incident-signoz` | UI e API SigNoz (porta UI `3301`→8080 interno) |
+| `signoz-otel-collector` | `incident-signoz-otel-collector` | Ingress OTLP (**4317/4318** no host quando publicados) |
+| `otel-collector` | `incident-otel-collector` | Gateway OTLP entre app e SigNoz |
+
+Testes rápidos:
+
+```bash
+curl -s http://localhost:8080/health
+curl -s http://localhost:8000/health
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3301/
+```
+
 ### Serviço não fica healthy
 
 **Sintoma**: `docker-compose ps` mostra `unhealthy`
@@ -157,27 +189,41 @@ docker exec orchestrator curl http://spring-app:8080/health
 curl http://127.0.0.1:8080/health
 ```
 
-### Webhook do SigNoz não dispara
+### Webhook do SigNoz não dispara / erros não chegam ao orchestrator
 
-**Sintoma**: Incidente não é criado mesmo com erro
+**Sintoma**: O `curl` em `/error` gera telemetry; no SigNoz aparecem traces, mas **`GET http://localhost:8000/incidents`** continua vazio e os logs do orchestrator não mostram webhook.
 
-**Solução**:
+**Causa habitual**: SigNoz **ingere** OTLP mas **não chama** o orchestrator até existir uma **regra de alerta** com **canal webhook** configurado.
+
+**Fluxo esperado**: `spring-app` → **`otel-collector`** → **`signoz-otel-collector`** → ClickHouse → UI SigNoz → **alerta dispara** → `POST http://orchestrator:8000/incidents`.
+
+**Checklist rápido**:
 ```bash
-# 1. Verifique se SigNoz está rodando
-curl http://localhost:3301
+docker compose ps
+# Confirme: incident-signoz, incident-signoz-otel-collector, incident-otel-collector, incident-spring-app, incident-orchestrator com Up.
 
-# 2. Teste endpoint do orchestrator manualmente
-curl -X POST http://localhost:8000/incidents \
+# OTLP ingest (host pode usar porta 4317 no signoz-otel-collector, conforme compose)
+docker compose logs --tail=80 signoz-otel-collector
+
+# Smoke test do webhook (pelo localhost do host — não pelo SigNoz)
+curl -s -X POST http://localhost:8000/incidents \
   -H "Content-Type: application/json" \
-  -d '{"alerts":[],"error_message":"test"}'
+  -d '{"alerts":[{"severity":"error","message":"teste-manual-webhook"}]}'
+```
 
-# 3. Configure alert rule no SigNoz
-# - Abra http://localhost:3301
-# - Alerts → Alert Rules → New
-# - Webhook: http://orchestrator:8000/incidents
+Se o `curl` acima responder com **`"status":"received"`**, o problema é **só configuração do SigNoz** (alerta/canal).
 
-# 4. Verifique logs do orchestrator
-docker-compose logs orchestrator
+**Configure no SigNoz** (nomes dos menus mudam conforme versão):
+1. Acesse **http://localhost:3301**.
+2. Crie um **canal de notificação** do tipo **Webhook** com URL **`http://orchestrator:8000/incidents`** ( **`POST`** , JSON ). Use **`orchestrator`** como hostname porque o SigNoz roda dentro do Compose; **`localhost`** apontaria para o próprio container do SigNoz.
+3. Crie uma **regra de alerta** que dispare quando a condição desejada ocorrer (taxa de erro, métrica, log/traces disponíveis para alertas na sua versão).
+4. Associe o canal webhook à regra e **ative** a regra.
+
+Guia mais detalhado (inglês): **[GETTING_STARTED.md](GETTING_STARTED.md#configure-signoz-alerts-for-the-orchestrator)** — secção **Configure SigNoz alerts for the orchestrator**.
+
+Depois reproduza o erro e observe:
+```bash
+docker compose logs -f orchestrator
 ```
 
 ## Problemas de Dados

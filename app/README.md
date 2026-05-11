@@ -5,10 +5,12 @@ Spring Boot application with OpenTelemetry observability for the AI-Assisted Inc
 ## Overview
 
 This is a sample Spring Boot application that demonstrates:
+
 - REST API endpoints for incident simulation
-- OpenTelemetry integration for tracing, metrics, and logs
-- SigNoz observability platform integration
-- Structured logging with correlation IDs
+- OpenTelemetry **traces**, **metrics**, and **logs** export over OTLP to the Compose `otel-collector` (seen in SigNoz after the Signoz ingestion pipeline processes them)
+- SigNoz integration
+
+Traces alone do **not** populate the Logs view in SigNoz. Logs are bridged separately via **`SdkLoggerProvider`** + **`io.opentelemetry.instrumentation:opentelemetry-logback-appender-1.0`** (see `logback-spring.xml` and `OpenTelemetryLoggingConfiguration`).
 
 ## Features
 
@@ -16,8 +18,7 @@ This is a sample Spring Boot application that demonstrates:
 - **Error Simulation**: `/error` - Throws intentional exception
 - **Timeout Simulation**: `/timeout` - Simulates 15 second delay
 - **Payment Service**: `/payment/{id}` - Sample business logic endpoint
-- **OpenTelemetry**: Automatic tracing and metrics export
-- **Structured Logging**: JSON logs with trace context
+- **OpenTelemetry**: Tracing, metrics (Micrometer OTLP), and **Logback logs** via OTLP Log Records
 
 ## Quick Start
 
@@ -79,9 +80,9 @@ Configure via environment variables:
 
 ## Monitoring
 
-Traces and metrics are automatically exported to:
-- OpenTelemetry Collector (OTLP)
-- SigNoz Dashboard (http://localhost:3301)
+Traces, metrics, and Logback **`INFO+`** logs are exported as OTLP to the Collector (`4317`), then forwarded to SigNoz’s OTel Collector and written to ClickHouse.
+
+In SigNoz, confirm under **Logs** (filter by **`service.name`**, aligned with **`spring.application.name`**). If Logs is empty, verify `docker compose logs otel-collector` / `signoz-otel-collector` for ingestion errors—not just Traces working.
 
 ## Requirements
 

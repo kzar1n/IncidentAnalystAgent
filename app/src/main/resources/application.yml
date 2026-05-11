@@ -9,6 +9,10 @@ spring:
   jmx:
     enabled: false
 
+# Logs: Logback → OpenTelemetry LogbackAppender → SdkLoggerProvider (OTLP/gRPC).
+# Uses OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT,
+# management.tracing.exporter.otlp.endpoint, or metrics OTLP URL (see OpenTelemetryLoggingConfiguration).
+
 management:
   endpoints:
     web:
