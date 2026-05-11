@@ -1,7 +1,4 @@
-version: '3.8'
-
 services:
-  # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
     container_name: incident-postgres
@@ -21,66 +18,173 @@ services:
     networks:
       - incident-network
 
-  # OpenTelemetry Collector
+  # --- SigNoz storage & ingestion (OTLP 4317/4318 lives on signoz-otel-collector, not on signoz) ---
+  init-clickhouse:
+    image: clickhouse/clickhouse-server:25.5.6
+    container_name: incident-init-clickhouse
+    command:
+      - bash
+      - -c
+      - |
+        version="v0.0.1"
+        node_os=$$(uname -s | tr '[:upper:]' '[:lower:]')
+        node_arch=$$(uname -m | sed s/aarch64/arm64/ | sed s/x86_64/amd64/)
+        echo "Fetching histogram-binary for $${node_os}/$${node_arch}"
+        cd /tmp
+        wget -O histogram-quantile.tar.gz "https://github.com/SigNoz/signoz/releases/download/histogram-quantile%2F$${version}/histogram-quantile_$${node_os}_$${node_arch}.tar.gz"
+        tar -xvzf histogram-quantile.tar.gz
+        mv histogram-quantile /var/lib/clickhouse/user_scripts/histogramQuantile
+    restart: on-failure
+    volumes:
+      - ./infrastructure/signoz/clickhouse/user_scripts:/var/lib/clickhouse/user_scripts/
+    networks:
+      - incident-network
+
+  zookeeper-1:
+    image: signoz/zookeeper:3.7.1
+    container_name: incident-zookeeper-1
+    user: root
+    volumes:
+      - zookeeper-1_data:/bitnami/zookeeper
+    environment:
+      - ZOO_SERVER_ID=1
+      - ALLOW_ANONYMOUS_LOGIN=yes
+      - ZOO_AUTOPURGE_INTERVAL=1
+      - ZOO_ENABLE_PROMETHEUS_METRICS=yes
+      - ZOO_PROMETHEUS_METRICS_PORT_NUMBER=9141
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -m 2 http://localhost:8080/commands/ruok | grep error | grep null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - incident-network
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.5.6
+    container_name: incident-clickhouse
+    tty: true
+    depends_on:
+      init-clickhouse:
+        condition: service_completed_successfully
+      zookeeper-1:
+        condition: service_healthy
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 262144
+        hard: 262144
+    environment:
+      - CLICKHOUSE_SKIP_USER_SETUP=1
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ./infrastructure/signoz/clickhouse/config.xml:/etc/clickhouse-server/config.xml
+      - ./infrastructure/signoz/clickhouse/users.xml:/etc/clickhouse-server/users.xml
+      - ./infrastructure/signoz/clickhouse/custom-function.xml:/etc/clickhouse-server/custom-function.xml
+      - ./infrastructure/signoz/clickhouse/user_scripts:/var/lib/clickhouse/user_scripts/
+      - ./infrastructure/signoz/clickhouse/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml
+      - clickhouse_data:/var/lib/clickhouse/
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://0.0.0.0:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - incident-network
+
+  signoz-telemetrystore-migrator:
+    image: signoz/signoz-otel-collector:v0.144.3
+    container_name: incident-signoz-telemetrystore-migrator
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      - SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_DSN=tcp://clickhouse:9000
+      - SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_CLUSTER=cluster
+      - SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_REPLICATION=true
+      - SIGNOZ_OTEL_COLLECTOR_TIMEOUT=10m
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        /signoz-otel-collector migrate bootstrap &&
+        /signoz-otel-collector migrate sync up &&
+        /signoz-otel-collector migrate async up
+    restart: on-failure
+    networks:
+      - incident-network
+
+  signoz-otel-collector:
+    image: signoz/signoz-otel-collector:v0.144.3
+    container_name: incident-signoz-otel-collector
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      signoz:
+        condition: service_started
+      signoz-telemetrystore-migrator:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        /signoz-otel-collector migrate sync check &&
+        /signoz-otel-collector --config=/etc/otel-collector-config.yaml --manager-config=/etc/manager-config.yaml --copy-path=/var/tmp/collector-config.yaml
+    volumes:
+      - ./infrastructure/signoz/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+      - ./infrastructure/signoz/otel-collector-opamp-config.yaml:/etc/manager-config.yaml
+    environment:
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=signoz-host,os.type=linux
+      - LOW_CARDINAL_EXCEPTION_GROUPING=false
+      - SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_DSN=tcp://clickhouse:9000
+      - SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_CLUSTER=cluster
+      - SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_REPLICATION=true
+      - SIGNOZ_OTEL_COLLECTOR_TIMEOUT=10m
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - incident-network
+
+  signoz:
+    image: signoz/signoz:v0.122.0
+    container_name: incident-signoz
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      - SIGNOZ_ALERTMANAGER_PROVIDER=signoz
+      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN=tcp://clickhouse:9000
+      - SIGNOZ_SQLSTORE_SQLITE_PATH=/var/lib/signoz/signoz.db
+      - SIGNOZ_TOKENIZER_JWT_SECRET=secret
+    ports:
+      - "3301:8080"
+    volumes:
+      - signoz_data:/var/lib/signoz
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - incident-network
+
+  # Gateway collector: apps -> here -> signoz-otel-collector (OTLP)
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.95.0
     container_name: incident-otel-collector
     command:
       - "--config=/etc/otel-collector-config.yml"
     ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-      - "8888:8888"   # Prometheus metrics
+      - "8888:8888"
     volumes:
       - ./infrastructure/otel-collector-config.yml:/etc/otel-collector-config.yml
     depends_on:
-      - signoz
+      signoz-otel-collector:
+        condition: service_started
     networks:
       - incident-network
 
-  # SigNoz
-  clickhouse:
-    image: clickhouse/clickhouse-server:23.10
-    container_name: incident-clickhouse
-    environment:
-      CLICKHOUSE_DB: signoz
-    ports:
-      - "8123:8123"
-      - "9000:9000"
-    volumes:
-      - clickhouse_data:/var/lib/clickhouse
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - incident-network
-
-  signoz:
-    image: signoz/signoz:0.35.0
-    container_name: incident-signoz
-    depends_on:
-      - clickhouse
-    environment:
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: 9000
-      SIGNOZ_DB: signoz
-    ports:
-      - "3301:3301"   # Frontend
-      - "4317:4317"   # OTLP gRPC (mapped through collector)
-      - "4318:4318"   # OTLP HTTP (mapped through collector)
-    volumes:
-      - signoz_data:/var/lib/signoz
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3301/api/v1/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - incident-network
-
-  # Spring Boot Application
   spring-app:
     build:
       context: ./app
@@ -94,7 +198,7 @@ services:
       - "8080:8080"
     depends_on:
       - otel-collector
-      - signoz
+      - signoz-otel-collector
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
       interval: 10s
@@ -104,7 +208,6 @@ services:
       - incident-network
     restart: unless-stopped
 
-  # FastAPI Orchestrator
   orchestrator:
     build:
       context: ./orchestrator
@@ -127,7 +230,11 @@ services:
       signoz:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8000/health"]
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\"",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -137,6 +244,8 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
+  zookeeper-1_data:
     driver: local
   clickhouse_data:
     driver: local
