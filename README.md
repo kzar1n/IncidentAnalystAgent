@@ -7,7 +7,7 @@ A proof-of-concept platform for AI-assisted incident resolution using OpenTeleme
 ### Prerequisites
 
 - Docker and Docker Compose
-- OpenAI API key (for CrewAI agents)
+- LLM API key for CrewAI agents (Gemini recommended)
 - Java 21+ (optional, for local Spring Boot development)
 - Python 3.12+ (optional, for local orchestrator development)
 
@@ -22,9 +22,13 @@ cd IncidentAnalystAgent
 2. **Configure environment**
 
 ```bash
-# Edit .env and add your OpenAI API key
+# Edit .env and add your LLM config (Gemini)
 nano .env
-# Set: OPENAI_API_KEY=sk-your-key-here
+# Set:
+# LLM_PROVIDER=gemini
+# LLM_MODEL=gemini/gemini-1.5-flash
+# GEMINI_API_KEY=your-key-here
+# GOOGLE_API_KEY=your-key-here
 ```
 
 3. **Start all services**

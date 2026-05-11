@@ -10,11 +10,12 @@ alembic==1.13.1
 psycopg2-binary==2.9.9
 
 # AI/ML - Using recent stable versions
-crewai==1.9.3
+# Gemini provider requires CrewAI extra: google-genai
+crewai[google-genai]==1.9.3
 openai==1.83.0
 
 # HTTP
-httpx==0.27.1
+httpx==0.28.1
 requests==2.32.0
 tenacity==8.3.0
 

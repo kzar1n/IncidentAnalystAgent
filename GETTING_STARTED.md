@@ -22,9 +22,9 @@ This guide will walk you through setting up and running the AI-Assisted Incident
   - Usually included with Docker Desktop
   - Verify: `docker-compose --version`
 
-- **OpenAI API Key**
+- **LLM API Key (Gemini recommended)**
   - Required for CrewAI agents
-  - Get from: https://platform.openai.com/account/api-keys
+  - Get Gemini key from: https://ai.google.dev/gemini-api/docs/api-key
   - Keep it safe and never commit to Git!
 
 ### Optional
@@ -53,10 +53,13 @@ nano .env
 notepad .env
 ```
 
-Add your OpenAI API key:
+Add your LLM configuration:
 
 ```env
-OPENAI_API_KEY=sk-your-actual-api-key-here
+LLM_PROVIDER=gemini
+LLM_MODEL=gemini/gemini-1.5-flash
+GEMINI_API_KEY=your-gemini-key-here
+GOOGLE_API_KEY=your-gemini-key-here
 ```
 
 ### 3. Start All Services
@@ -418,15 +421,17 @@ docker volume rm incidentanalystagent_postgres_data
 docker-compose up -d postgres
 ```
 
-### CrewAI/OpenAI Errors
+### CrewAI/LLM Errors
 
 **Problem:** "Authentication error" or "Invalid API key"
 
 **Solution:**
 1. Verify API key in `.env`
-2. Check key has API access enabled at https://platform.openai.com
-3. Check API quota/usage limits
-4. View logs: `docker-compose logs orchestrator`
+2. If using Gemini, ensure `GEMINI_API_KEY` (and optionally `GOOGLE_API_KEY`) is set
+3. If using Gemini, ensure orchestrator dependencies include `crewai[google-genai]`
+4. Rebuild image after dependency changes: `docker compose build --no-cache orchestrator`
+5. Check API quota/usage limits for your provider
+6. View logs: `docker-compose logs orchestrator`
 
 ### Webhook Not Triggering
 
@@ -557,7 +562,7 @@ This is a proof-of-concept. For production deployment, implement:
 1. Check logs: `docker-compose logs -f`
 2. Review README files in each service directory
 3. Check `.env` configuration
-4. Verify OpenAI API key
+4. Verify LLM API key (Gemini/OpenAI)
 5. Ensure ports are not in use
 
 ## Summary

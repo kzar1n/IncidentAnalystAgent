@@ -76,7 +76,11 @@ Environment variables:
 - `DB_PASSWORD` - Database password (default: incident_pass)
 - `PORT` - API port (default: 8000)
 - `HOST` - API host (default: 0.0.0.0)
-- `OPENAI_API_KEY` - OpenAI API key for CrewAI
+- `LLM_PROVIDER` - LLM provider selector (default: `gemini`)
+- `LLM_MODEL` - CrewAI/LiteLLM model name (default: `gemini/gemini-1.5-flash`)
+- `GEMINI_API_KEY` - Gemini API key (recommended)
+- `GOOGLE_API_KEY` - Gemini API key fallback
+- `OPENAI_API_KEY` - Optional fallback key if using OpenAI models
 
 ## Quick Start
 
@@ -86,9 +90,17 @@ Environment variables:
 # Install dependencies
 pip install -r requirements.txt
 
+# NOTE (Gemini):
+# requirements.txt already includes crewai[google-genai]
+# If you still see "Google Gen AI native provider not available",
+# rebuild the container/image to reinstall dependencies.
+
 # Set environment variables
 export DB_HOST=localhost
-export OPENAI_API_KEY=your-key-here
+export LLM_PROVIDER=gemini
+export LLM_MODEL=gemini/gemini-1.5-flash
+export GEMINI_API_KEY=your-gemini-key-here
+export GOOGLE_API_KEY=your-gemini-key-here
 
 # Run application
 python main.py

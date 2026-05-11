@@ -1,5 +1,6 @@
 import logging
-from crewai import Agent, Task, Crew
+import os
+from crewai import Agent, Task, Crew, LLM
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -8,8 +9,27 @@ class IncidentAnalystAgent:
     """Specialized agent for analyzing incidents and identifying root causes"""
 
     @staticmethod
+    def _build_llm() -> LLM:
+        """
+        Build an explicit LLM config so we can swap providers by env var.
+        Default provider is Gemini.
+        """
+        model = os.getenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+        api_key = (
+            os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+        )
+        return LLM(
+            model=model,
+            api_key=api_key,
+            temperature=0.2
+        )
+
+    @staticmethod
     def create_analyst_agent() -> Agent:
         """Create incident analyst agent"""
+        llm = IncidentAnalystAgent._build_llm()
         return Agent(
             role="Incident Analyst",
             goal="Analyze incident data and identify the primary error cause",
@@ -18,12 +38,14 @@ class IncidentAnalystAgent:
             identifying error patterns, and classifying severity levels. Your role is to
             provide accurate and detailed analysis of incidents.""",
             verbose=True,
-            allow_delegation=False
+            allow_delegation=False,
+            llm=llm
         )
 
     @staticmethod
     def create_root_cause_agent() -> Agent:
         """Create root cause analysis agent"""
+        llm = IncidentAnalystAgent._build_llm()
         return Agent(
             role="Root Cause Analyst", 
             goal="Determine the root cause and suggest corrections",
@@ -32,7 +54,8 @@ class IncidentAnalystAgent:
             and best practices in software development. Your goal is to identify the
             underlying root cause and suggest effective solutions.""",
             verbose=True,
-            allow_delegation=False
+            allow_delegation=False,
+            llm=llm
         )
 
     @staticmethod
