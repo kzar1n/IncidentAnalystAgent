@@ -79,36 +79,34 @@ class IncidentAnalystAgent:
             # Create tasks
             analysis_task = Task(
                 description=f"""Analyze the following incident and provide detailed insights:
-                
-Service: {incident_data.get('service_name')}
-Error Type: {incident_data.get('error_type')}
-Error Message: {incident_data.get('error_message')}
-Stacktrace:
-{incident_data.get('stacktrace')}
-
-Please provide:
-1. Summary of the error
-2. Primary cause of the incident
-3. Affected components
-4. Severity assessment""",
+                                Service: {incident_data.get('service_name')}
+                                Error Type: {incident_data.get('error_type')}
+                                Error Message: {incident_data.get('error_message')}
+                                Stacktrace:{incident_data.get('stacktrace')}
+                                
+                                Please provide:
+                                1. Summary of the error
+                                2. Primary cause of the incident
+                                3. Affected components
+                                4. Severity assessment""",
                 agent=analyst,
                 expected_output="Detailed incident analysis with error summary and affected components"
             )
 
             root_cause_task = Task(
                 description=f"""Based on the incident analysis, determine the root cause and suggest fixes:
-
-Incident Details:
-- Service: {incident_data.get('service_name')}
-- Error: {incident_data.get('error_type')}
-- Message: {incident_data.get('error_message')}
-
-Please provide:
-1. Root cause hypothesis
-2. Impacted files or components (comma-separated list)
-3. Suggested fix approach
-4. Risk level (LOW, MEDIUM, HIGH, CRITICAL)
-5. Implementation recommendations""",
+                
+                Incident Details:
+                - Service: {incident_data.get('service_name')}
+                - Error: {incident_data.get('error_type')}
+                - Message: {incident_data.get('error_message')}
+                
+                Please provide:
+                1. Root cause hypothesis
+                2. Impacted files or components (comma-separated list)
+                3. Suggested fix approach
+                4. Risk level (LOW, MEDIUM, HIGH, CRITICAL)
+                5. Implementation recommendations""",
                 agent=root_cause_analyst,
                 expected_output="Root cause analysis with suggested fixes and risk assessment"
             )
@@ -121,6 +119,8 @@ Please provide:
             )
 
             result = crew.kickoff()
+
+            logger.info(f"CrewAI analysis result: {result}")
             
             # Parse results
             analysis_result = IncidentAnalystAgent._parse_crew_result(result)
@@ -141,7 +141,7 @@ Please provide:
             # Extract root cause
             root_cause = "Unable to determine specific root cause"
             if "root cause" in output_str:
-                root_cause = str(crew_output)[:200]
+                root_cause = str(output_str)[:200]
             
             # Determine risk level
             risk_level = "MEDIUM"
@@ -153,9 +153,10 @@ Please provide:
             return {
                 "root_cause": root_cause,
                 "impacted_files": ["Application.java"],
-                "suggested_fix": f"Review error handling in {crew_output[:150] if crew_output else 'the affected component'}",
+                "suggested_fix": f"Review error handling in {output_str[:150] if output_str else 'the affected component'}",
                 "risk_level": risk_level
             }
+        
         except Exception as e:
             logger.error(f"Error parsing crew result: {e}")
             return {

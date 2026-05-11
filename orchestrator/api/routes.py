@@ -51,7 +51,7 @@ async def create_incident_from_webhook(
         Initial response with incident receipt confirmation
     """
     try:
-        logger.info("Received webhook payload")
+        logger.info("Received webhook payload", extra={"payload": payload})
         
         # Convert to dict for processing
         payload_dict = payload.model_dump()
