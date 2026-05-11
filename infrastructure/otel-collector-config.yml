@@ -20,10 +20,9 @@ processors:
 
 exporters:
   otlp:
-    client:
-      endpoint: signoz:4317
-      tls:
-        insecure: true
+    endpoint: signoz-otel-collector:4317
+    tls:
+      insecure: true
 
   logging:
     loglevel: debug
